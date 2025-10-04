@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# @about: Inspect and repair Flatpak permissions
 
 # Usage
 usage() {

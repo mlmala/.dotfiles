@@ -2,6 +2,7 @@
 # File: ~/.local/bin/dm-video
 # Log : ~/.local/share/dm-video.log
 # Purpose: Video output diagnosis & quick fixes with dmenu
+# @about: Diagnose and manage video outputs (extend, mirror, turn off/on)
 
 set -euo pipefail
 LOG="${HOME}/.local/share/dm-video.log"
