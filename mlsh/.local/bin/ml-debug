@@ -2,27 +2,14 @@
 # -----------------------------------------------------------------------------
 # ml-debug
 # -----------------------------------------------------------------------------
-# Modular debug launcher using rofi menus.
+# Modular debug launcher with rofi menus and navigation.
 #
 # Enhancements:
-#   - [all] group entries show full qualified labels like [module][tool]
-#   - Skips internal scripts (ml-menu.sh, ml-utils.sh)
-#   - Stores descriptions (@about) inside config.json for faster loading
-#   - Simplified prompts ("[module] :") and metadata-aware JSON
-#
-# JSON format example:
-# {
-#   "[general]": {
-#     "[video]": {"file": "ml-video.sh", "about": "Diagnose and manage video outputs"}
-#   },
-#   "[flatpak]": {
-#     "[flatpak1]": {"file": "ml-flatpak1.sh", "about": "Check flatpak permissions"}
-#   },
-#   "[all]": {
-#     "[general][video]": {"file": "ml-video.sh", "about": "Diagnose and manage video outputs"},
-#     "[flatpak][flatpak1]": {"file": "ml-flatpak1.sh", "about": "Check flatpak permissions"}
-#   }
-# }
+#   - Interactive navigation with [BACK] option.
+#   - Bold labels and italic descriptions using rofi markup.
+#   - [all] group entries show full qualified labels like [module][tool].
+#   - Skips internal scripts (ml-menu.sh, ml-utils.sh).
+#   - Stores descriptions (@about) inside config.json for faster loading.
 # -----------------------------------------------------------------------------
 set -o errexit -o pipefail -o nounset
 
@@ -69,7 +56,6 @@ json_for_dir() {
   for s in "${scripts[@]:-}"; do
     local fname label about
     fname="$(basename -- "$s")"
-    # Skip internal libs
     [[ "$fname" == "ml-menu.sh" || "$fname" == "ml-utils.sh" ]] && continue
     if [[ -f "$s" && -x "$s" ]]; then
       label="$(label_from_script "$s")"
@@ -101,11 +87,10 @@ cmd_init() {
     result="$(jq --arg g "$group" --argjson o "$gjson" '. + {($g): $o}' <<<"$result")"
   done
 
-  # Build [all] group including fully qualified labels
   local all='{}' groups g
   groups=$(jq -r 'keys[]' <<<"$result")
   while IFS= read -r g; do
-    local sub label file about qualified
+    local label file about qualified
     while IFS=$'\t' read -r label file about; do
       file=$(jq -r --arg k "$g" --arg l "$label" '.[$k][$l].file' <<<"$result")
       about=$(jq -r --arg k "$g" --arg l "$label" '.[$k][$l].about' <<<"$result")
@@ -127,26 +112,202 @@ run_interactive() {
   ml_require jq rofi || exit 127
   [[ -s "${CONFIG_JSON}" ]] || { ml_notify "ml-debug" "Missing ${CONFIG_JSON}. Run: ml-debug --init"; exit 3; }
 
-  local groups sel_group
-  groups="$(jq -r 'keys[]' "${CONFIG_JSON}")"
-  if ! sel_group="$(printf '%s\n' "$groups" | ml_menu_select "Select module")"; then
-    exit 0
-  fi
+  while true; do
+    local groups sel_group
+    groups="$(jq -r 'keys[]' "${CONFIG_JSON}")"
+    if ! sel_group="$(printf '%s\n' "$groups" | ml_menu_select "Select module")"; then
+      exit 0
+    fi
 
-  local tools sel_tool_line sel_tool_label sel_tool_file sel_tool_about
-  tools="$(jq -r --arg k "$sel_group" '.[$k] | to_entries[] | "\(.key)\t\(.value.file)\t\(.value.about)"' "${CONFIG_JSON}")"
-  if ! sel_tool_line="$(printf '%s\n' "$tools" | awk -F"\t" '{printf "%s\t%s\n", $1, $3}' | ml_menu_select "${sel_group}")"; then
-    exit 0
-  fi
+    while true; do
+      local tools_tsv display_lines sel_tool_label sel_tool_file
+      tools_tsv="$(jq -r --arg k "$sel_group" '.[$k] | to_entries[] | "\(.key)\t\(.value.file)\t\(.value.about)"' "${CONFIG_JSON}")"
 
-  sel_tool_label="$sel_tool_line"
-  sel_tool_file="$(printf '%s\n' "$tools" | awk -F"\t" -v k="$sel_tool_label" '$1==k{print $2; exit}')"
-  [[ -z "${sel_tool_file}" ]] && { ml_notify "ml-debug" "Invalid selection"; exit 1; }
+      # Build the display list: [BACK] on its own line + label\tabout for others
+      display_lines="$(
+        printf "[BACK]\n"
+        printf '%s\n' "$tools_tsv" | awk -F"\t" '{printf "%s\t%s\n", $1, $3}'
+      )"
 
-  local script_path="${TOOLS_DIR}/${sel_tool_file}"
-  [[ -x "$script_path" ]] || { ml_notify "ml-debug" "Script not executable: ${script_path}"; exit 1; }
+      if ! sel_tool_label="$(printf '%s\n' "$display_lines" | ml_menu_select "${sel_group} :")"; then
+        exit 0
+      fi
+      [[ "$sel_tool_label" == "[BACK]" ]] && break
 
-  ml_run_tool "$script_path" "${sel_tool_label}"
+      sel_tool_file="$(printf '%s\n' "$tools_tsv" | awk -F"\t" -v k="$sel_tool_label" '$1==k{print $2; exit}')"
+      [[ -z "${sel_tool_file}" ]] && { ml_notify "ml-debug" "Invalid selection"; continue; }
+
+      local script_path="${TOOLS_DIR}/${sel_tool_file}"
+      [[ -x "$script_path" ]] || { ml_notify "ml-debug" "Script not executable: ${script_path}"; continue; }
+
+      ml_run_tool "$script_path" "${sel_tool_label}"
+	  return 0
+    done
+  done
+}
+
+main() {
+  case "${1:-}" in
+    --init)
+      shift || true
+      cmd_init "${1:-$DEFAULT_DOTFILES_ROOT}"
+      ;;
+    "" )
+      run_interactive; exit 0
+      ;;
+    *)
+      echo "Usage:\n  ml-debug --init [DOTFILES_DIR]\n  ml-debug" >&2
+      exit 64
+      ;;
+  esac
+}
+
+main "$@"
+#!/usr/bin/env bash
+# -----------------------------------------------------------------------------
+# ml-debug
+# -----------------------------------------------------------------------------
+# Modular debug launcher with rofi menus and navigation.
+#
+# Enhancements:
+#   - Interactive navigation with [BACK] option.
+#   - Bold labels and italic descriptions using rofi markup.
+#   - [all] group entries show full qualified labels like [module][tool].
+#   - Skips internal scripts (ml-menu.sh, ml-utils.sh).
+#   - Stores descriptions (@about) inside config.json for faster loading.
+# -----------------------------------------------------------------------------
+set -o errexit -o pipefail -o nounset
+
+: "${HOME:?}"
+CONFIG_DIR="${HOME}/.config/ml-debug"
+CONFIG_JSON="${CONFIG_DIR}/config.json"
+TOOLS_DIR="${HOME}/.local/share/mlsh"
+LIB_UTILS="${TOOLS_DIR}/ml-utils.sh"
+LIB_MENU="${TOOLS_DIR}/ml-menu.sh"
+DEFAULT_DOTFILES_ROOT="${HOME}/.dotfiles"
+
+if [[ ! -r "${LIB_UTILS}" || ! -r "${LIB_MENU}" ]]; then
+  echo "FATAL: Missing ml-utils.sh or ml-menu.sh under ${TOOLS_DIR}" >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+source "${LIB_UTILS}"
+# shellcheck source=/dev/null
+source "${LIB_MENU}"
+
+mkdir -p "${CONFIG_DIR}"
+
+label_from_script() {
+  local f="$1"
+  f="$(basename -- "$f")"
+  f="${f%.sh}"
+  f="${f#ml-}"
+  printf "[%s]\n" "$f"
+}
+
+extract_about() {
+  local file="$1"
+  local about
+  about=$(grep -m1 '^# *@about:' "$file" 2>/dev/null | sed 's/^# *@about:[[:space:]]*//')
+  printf "%s\n" "$about"
+}
+
+json_for_dir() {
+  local dir="$1"
+  local jq_obj='{}'
+  shopt -s nullglob
+  local scripts=("${dir}"/*.sh)
+  shopt -u nullglob
+  for s in "${scripts[@]:-}"; do
+    local fname label about
+    fname="$(basename -- "$s")"
+    [[ "$fname" == "ml-menu.sh" || "$fname" == "ml-utils.sh" ]] && continue
+    if [[ -f "$s" && -x "$s" ]]; then
+      label="$(label_from_script "$s")"
+      about="$(extract_about "$s")"
+      jq_obj="$(jq --arg k "$label" --arg f "$fname" --arg a "$about" '. + {($k): {file:$f, about:$a}}' <<<"$jq_obj")"
+    fi
+  done
+  printf "%s\n" "$jq_obj"
+}
+
+cmd_init() {
+  local root="${1:-$DEFAULT_DOTFILES_ROOT}"
+  ml_require jq rofi || exit 127
+  [[ -d "$root" ]] || { ml_echo_error "Dotfiles root not found: $root"; exit 2; }
+  local general_dir="${root}/mlsh/.local/share/mlsh"
+  [[ -d "$general_dir" ]] || { ml_echo_error "Missing base module at: $general_dir"; exit 2; }
+
+  local result='{}'
+  local general_json; general_json="$(json_for_dir "$general_dir")"
+  result="$(jq --argjson o "$general_json" '. + {"[general]": $o}' <<<"$result")"
+
+  local mod dir group gjson
+  for mod in "$root"/*; do
+    [[ "$(basename -- "$mod")" == "mlsh" ]] && continue
+    dir="$mod/.local/share/mlsh"
+    [[ -d "$dir" ]] || continue
+    group="[$(basename -- "$mod")]"
+    gjson="$(json_for_dir "$dir")"
+    result="$(jq --arg g "$group" --argjson o "$gjson" '. + {($g): $o}' <<<"$result")"
+  done
+
+  local all='{}' groups g
+  groups=$(jq -r 'keys[]' <<<"$result")
+  while IFS= read -r g; do
+    local label file about qualified
+    while IFS=$'\t' read -r label file about; do
+      file=$(jq -r --arg k "$g" --arg l "$label" '.[$k][$l].file' <<<"$result")
+      about=$(jq -r --arg k "$g" --arg l "$label" '.[$k][$l].about' <<<"$result")
+      qualified="${g}${label}"
+      all=$(jq --arg k "$qualified" --arg f "$file" --arg a "$about" '. + {($k): {file:$f, about:$a}}' <<<"$all")
+    done < <(jq -r --arg k "$g" '.[$k] | to_entries[] | "\(.key)\t\(.value.file)\t\(.value.about)"' <<<"$result")
+  done <<< "$groups"
+  result="$(jq --argjson all "$all" '. + {"[all]": $all}' <<<"$result")"
+
+  mkdir -p "${CONFIG_DIR}"
+  printf '%s\n' "$result" > "${CONFIG_JSON}.tmp$$"
+  mv "${CONFIG_JSON}.tmp$$" "$CONFIG_JSON"
+
+  ml_notify "ml-debug" "Config generated at ${CONFIG_JSON}"
+  ml_echo_info "Config generated at ${CONFIG_JSON}"
+}
+
+run_interactive() {
+  ml_require jq rofi || exit 127
+  [[ -s "${CONFIG_JSON}" ]] || { ml_notify "ml-debug" "Missing ${CONFIG_JSON}. Run: ml-debug --init"; exit 3; }
+
+  while true; do
+    local groups sel_group
+    groups="$(jq -r 'keys[]' "${CONFIG_JSON}")"
+    if ! sel_group="$(printf '%s\n' "$groups" | ml_menu_select "Select module")"; then
+      exit 0
+    fi
+
+    while true; do
+      local tools_tsv display_lines sel_tool_label sel_tool_file
+      tools_tsv="$(jq -r --arg k "$sel_group" '.[$k] | to_entries[] | "\(.key)\t\(.value.file)\t\(.value.about)"' "${CONFIG_JSON}")"
+
+      # Build the display list: [BACK] on its own line + label\tabout for others
+      display_lines="$(
+        printf "[BACK]\n"
+        printf '%s\n' "$tools_tsv" | awk -F"\t" '{printf "%s\t%s\n", $1, $3}'
+      )"
+
+      if ! sel_tool_label="$(printf '%s\n' "$display_lines" | ml_menu_select "${sel_group} :")"; then
+        exit 0
+      fi
+      [[ "$sel_tool_label" == "[BACK]" ]] && break
+
+      sel_tool_file="$(printf '%s\n' "$tools_tsv" | awk -F"\t" -v k="$sel_tool_label" '$1==k{print $2; exit}')"
+      [[ -z "${sel_tool_file}" ]] && { ml_notify "ml-debug" "Invalid selection"; continue; }
+
+      local script_path="${TOOLS_DIR}/${sel_tool_file}"
+      [[ -x "$script_path" ]] || { ml_notify "ml-debug" "Script not executable: ${script_path}"; continue; }
+
+      ml_run_tool "$script_path" "${sel_tool_label}"
+    done
+  done
 }
 
 main() {
